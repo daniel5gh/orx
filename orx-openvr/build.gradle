@@ -1,0 +1,4 @@
+dependencies {
+    implementation "org.lwjgl:lwjgl-openvr:3.2.0"
+    runtime "org.lwjgl:lwjgl-openvr:3.2.0:natives-windows"
+}
