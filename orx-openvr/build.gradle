@@ -1,4 +1,6 @@
 dependencies {
-    implementation "org.lwjgl:lwjgl-openvr:3.2.0"
-    runtime "org.lwjgl:lwjgl-openvr:3.2.0:natives-windows"
+    // because we need to peek into texture internals
+    compile "org.openrndr:openrndr-gl3:$openrndrVersion"
+    implementation "org.lwjgl:lwjgl-openvr:$lwjglVersion"
+    runtime "org.lwjgl:lwjgl-openvr:$lwjglVersion:natives-windows"
 }
