@@ -1,17 +1,21 @@
+package org.openrndr.extra.openvr
+
 import mu.KotlinLogging
-import org.lwjgl.opengl.GL11
 import org.lwjgl.openvr.*
+import org.lwjgl.openvr.VR.*
+import org.lwjgl.openvr.VRSystem.VRSystem_GetRecommendedRenderTargetSize
+import org.lwjgl.openvr.VRSystem.VRSystem_GetStringTrackedDeviceProperty
+import org.lwjgl.system.MemoryStack.stackPush
 import org.openrndr.Extension
 import org.openrndr.Program
 import org.openrndr.color.ColorRGBa
 import org.openrndr.draw.*
 import org.openrndr.events.Event
 import org.openrndr.internal.gl3.ColorBufferGL3
-import org.openrndr.internal.gl3.checkGLErrors
 import org.openrndr.internal.gl3.debugGLErrors
 import org.openrndr.math.Matrix44
 import org.openrndr.math.Vector3
-import java.nio.IntBuffer
+
 
 fun convertHmdMatrix44(m: HmdMatrix44): Matrix44 {
     return Matrix44(
@@ -39,7 +43,8 @@ enum class Eye {
 // the name events is not entirely accurate as it contains both events and state
 class OpenVRHMDEvents {
     class OpenVRHMDEvent(
-            var propagationCancelled: Boolean = false) {
+            var propagationCancelled: Boolean = false
+    ) {
         fun cancelPropagation() {
             propagationCancelled = true
         }
@@ -58,14 +63,14 @@ class OpenVRHMDEvents {
     var viewRight = Matrix44.IDENTITY
 
     // generic camera API
-    var projection: Matrix44 = Matrix44.IDENTITY
+    val projection: Matrix44
         get() {
             return when (currentEye) {
                 Eye.Left -> projectionLeft
                 Eye.Right -> projectionRight
             }
         }
-    var view: Matrix44 = Matrix44.IDENTITY
+    val view: Matrix44
         get() {
             return when (currentEye) {
                 Eye.Left -> viewLeft
@@ -74,7 +79,7 @@ class OpenVRHMDEvents {
         }
 }
 
-class OpenVR : Extension {
+class OpenVRExtension : Extension {
     private val logger = KotlinLogging.logger {}
     override var enabled = true
     var showGrid = true
@@ -100,64 +105,79 @@ class OpenVR : Extension {
     }
 
     /**
-     * Initialize OprnVR
+     * Initialize OpenVRExtension
      *
      * Call after OpenGL context has been created and made current
      */
     private fun vrInit() {
         try {
-            val peError: IntBuffer = IntBuffer.allocate(1)
-            val eType = VR.EVRApplicationType_VRApplication_Scene
-            val token = VR.VR_InitInternal(peError, eType)
-            if (peError.get(0) != 0) {
-                logger.error {
-                    "Initialize Error: ${VR.VR_GetVRInitErrorAsEnglishDescription(peError.get(0))}"
-                    " https://github.com/ValveSoftware/openvr/wiki/HmdError"
+            logger.info("VR_IsRuntimeInstalled() = ${VR_IsRuntimeInstalled()}")
+            logger.info("VR_RuntimePath() = ${VR_RuntimePath()}")
+            logger.info("VR_IsHmdPresent() = ${VR_IsHmdPresent()}")
+
+            stackPush().use { stack ->
+                val peError = stack.mallocInt(1)
+                val eType = EVRApplicationType_VRApplication_Scene
+                val token = VR_InitInternal(peError, eType)
+                if (peError[0] != 0) {
+                    logger.error {
+                        "Error symbol: ${VR_GetVRInitErrorAsSymbol(peError[0])}"
+                        "Initialize Error: ${VR_GetVRInitErrorAsEnglishDescription(peError[0])}"
+                        " https://github.com/ValveSoftware/openvr/wiki/HmdError"
+                    }
+                    enabled = false
+                    return
                 }
-                enabled = false
-                return
-            }
-            OpenVR.create(token)
-            logger.debug("using runtime: ${VR.VR_RuntimePath()} ")
-            val pnWidth: IntBuffer = IntBuffer.allocate(1)
-            val pnHeight: IntBuffer = IntBuffer.allocate(1)
-//            EXCEPTION_ACCESS_VIOLATION?
-//            VRSystem.VRSystem_GetRecommendedRenderTargetSize(pnWidth, pnHeight)
-            // hack hack, hardcode some size instead
-            pnWidth.put(2048)
-            pnWidth.rewind()
-            pnHeight.put(2048)
-            pnHeight.rewind()
-            logger.debug("Suggested render target size: ${pnWidth.get(0)}x${pnHeight.get(0)}")
-            rtLeft = renderTarget(pnWidth.get(0), pnHeight.get(0)) {
-                colorBuffer()
-            }
-            rtRight = renderTarget(pnWidth.get(0), pnHeight.get(0)) {
-                colorBuffer()
-            }
-            // get projection matrices
-            val matrix44 = HmdMatrix44.create()
-            VRSystem.VRSystem_GetProjectionMatrix(VR.EVREye_Eye_Left, 0.1f, 500.0f, matrix44)
-            val projectionLeft = convertHmdMatrix44(matrix44)
-            VRSystem.VRSystem_GetProjectionMatrix(VR.EVREye_Eye_Right, 0.1f, 500.0f, matrix44)
-            val projectionRight = convertHmdMatrix44(matrix44)
-            logger.debug("projection Left:\n$projectionLeft")
-            logger.debug("projection Right:\n$projectionRight")
-            // get eye offset matrices
-            val matrix34 = HmdMatrix34.create()
-            VRSystem.VRSystem_GetEyeToHeadTransform(VR.EVREye_Eye_Left, matrix34)
-            val eyeLeft = convertHmdMatrix34(matrix34)
-            VRSystem.VRSystem_GetEyeToHeadTransform(VR.EVREye_Eye_Right, matrix34)
-            val eyeRight = convertHmdMatrix34(matrix34)
-            logger.debug("eye Left:\n$eyeLeft")
-            logger.debug("eye Right:\n$eyeRight")
-            debugGLErrors { null }
 
-            program.openvr.projectionLeft = projectionLeft
-            program.openvr.projectionRight = projectionRight
-            program.openvr.eyeLeft = eyeLeft
-            program.openvr.eyeRight = eyeRight
+                OpenVR.create(token)
+                logger.info(
+                        "Model Number : " + VRSystem_GetStringTrackedDeviceProperty(
+                                k_unTrackedDeviceIndex_Hmd,
+                                ETrackedDeviceProperty_Prop_ModelNumber_String,
+                                peError
+                        )
+                )
+                logger.info(
+                        "Serial Number: " + VRSystem_GetStringTrackedDeviceProperty(
+                                k_unTrackedDeviceIndex_Hmd,
+                                ETrackedDeviceProperty_Prop_SerialNumber_String,
+                                peError
+                        )
+                )
+                val pnWidth = stack.mallocInt(1)
+                val pnHeight = stack.mallocInt(1)
+                VRSystem_GetRecommendedRenderTargetSize(pnWidth, pnHeight)
+                logger.debug("Suggested render target size: ${pnWidth[0]}x${pnHeight[0]}")
+                rtLeft = renderTarget(pnWidth[0], pnHeight[0]) {
+                    colorBuffer()
+                }
+                rtRight = renderTarget(pnWidth[0], pnHeight[0]) {
+                    colorBuffer()
+                }
 
+                // get projection matrices
+                val matrix44 = HmdMatrix44.create()
+                VRSystem.VRSystem_GetProjectionMatrix(EVREye_Eye_Left, 0.1f, 500.0f, matrix44)
+                val projectionLeft = convertHmdMatrix44(matrix44)
+                VRSystem.VRSystem_GetProjectionMatrix(EVREye_Eye_Right, 0.1f, 500.0f, matrix44)
+                val projectionRight = convertHmdMatrix44(matrix44)
+//                logger.debug("projection Left:\n$projectionLeft")
+//                logger.debug("projection Right:\n$projectionRight")
+                // get eye offset matrices
+                val matrix34 = HmdMatrix34.create()
+                VRSystem.VRSystem_GetEyeToHeadTransform(EVREye_Eye_Left, matrix34)
+                val eyeLeft = convertHmdMatrix34(matrix34)
+                VRSystem.VRSystem_GetEyeToHeadTransform(EVREye_Eye_Right, matrix34)
+                val eyeRight = convertHmdMatrix34(matrix34)
+//                logger.debug("eye Left:\n$eyeLeft")
+//                logger.debug("eye Right:\n$eyeRight")
+                debugGLErrors { null }
+
+                program.openvr.projectionLeft = projectionLeft
+                program.openvr.projectionRight = projectionRight
+                program.openvr.eyeLeft = eyeLeft
+                program.openvr.eyeRight = eyeRight
+            }
         } catch (e: Exception) {
             logger.error("Disabling because no OpenVR support due to: $e")
             enabled = false
@@ -170,7 +190,7 @@ class OpenVR : Extension {
 
     override fun setup(program: Program) {
         logger.debug {
-            "Initializing OpenVR"
+            "Initializing OpenVRExtension"
         }
         this.program = program
         vrInit()
@@ -180,7 +200,7 @@ class OpenVR : Extension {
         if (!enabled) return
 
         enabled = false
-        VR.VR_ShutdownInternal()
+        VR_ShutdownInternal()
         logger.debug("Cleaned up VR")
     }
 
@@ -192,12 +212,12 @@ class OpenVR : Extension {
      * much as possible.
      */
     private fun vrPreDraw() {
-        val pRenderPoseArray = TrackedDevicePose.create(VR.k_unMaxTrackedDeviceCount)
-        val pGamePoseArray = TrackedDevicePose.create(VR.k_unMaxTrackedDeviceCount)
+        val pRenderPoseArray = TrackedDevicePose.create(k_unMaxTrackedDeviceCount)
+        val pGamePoseArray = TrackedDevicePose.create(k_unMaxTrackedDeviceCount)
         // TODO handle openvr events VRSystem_PollNextEvent and processVREvent
         VRCompositor.VRCompositor_WaitGetPoses(pRenderPoseArray, pGamePoseArray)
         // get first render pose use its mDeviceToAbsoluteTracking as head space matrix
-        val view = convertHmdMatrix34(pRenderPoseArray.get(0).mDeviceToAbsoluteTracking())
+        val view = convertHmdMatrix34(pRenderPoseArray[0].mDeviceToAbsoluteTracking())
         program.openvr.viewLeft = program.openvr.eyeLeft * view
         program.openvr.viewRight = program.openvr.eyeRight * view
     }
@@ -209,25 +229,27 @@ class OpenVR : Extension {
 
     private fun submitBuffers() {
         val texture = Texture.create()
+        // poking into openrndr gl3 internals to get opengl texture ID
         texture.handle((rtLeft.colorBuffers[0] as ColorBufferGL3).texture.toLong())
-        texture.eType(VR.ETextureType_TextureType_OpenGL)
-        texture.eColorSpace(VR.EColorSpace_ColorSpace_Gamma)
+        texture.eType(ETextureType_TextureType_OpenGL)
+        texture.eColorSpace(EColorSpace_ColorSpace_Gamma)
         VRCompositor.VRCompositor_Submit(
-                VR.EVREye_Eye_Left,
+                EVREye_Eye_Left,
                 texture,
                 null,
-                VR.EVRSubmitFlags_Submit_Default
+                EVRSubmitFlags_Submit_Default
         )
         texture.handle((rtRight.colorBuffers[0] as ColorBufferGL3).texture.toLong())
         VRCompositor.VRCompositor_Submit(
-                VR.EVREye_Eye_Right,
+                EVREye_Eye_Right,
                 texture,
                 null,
-                VR.EVRSubmitFlags_Submit_Default
+                EVRSubmitFlags_Submit_Default
         )
-        // TODO(VR): OpenVR compositor expects a texture object of target GL_TEXTURE_2D_MULTISAMPLE, ours is GL_TEXTURE_2D, leading to a "GL_INVALID_OPERATION error generated. Target doesn't match the texture's target."
-        GL11.glGetError() // This mismatch doesn't seem to be harmful, so clear error state :)
-        checkGLErrors { null }
+//        // OpenVR compositor expects a texture object of target GL_TEXTURE_2D_MULTISAMPLE, ours is GL_TEXTURE_2D, leading to a "GL_INVALID_OPERATION error generated. Target doesn't match the texture's target."
+//        // this is fixed in the openvr api since
+//        GL11.glGetError() // This mismatch doesn't seem to be harmful, so clear error state :)
+//        checkGLErrors { null }
     }
 
     override fun afterDraw(drawer: Drawer, program: Program) {
@@ -238,7 +260,7 @@ class OpenVR : Extension {
 
     private fun drawGrid(drawer: Drawer) {
         drawer.isolated {
-            drawer.model = Matrix44.IDENTITY;
+            drawer.model = Matrix44.IDENTITY
             drawer.translate(0.0, -2.0, 0.0)
 
             drawer.fill = ColorRGBa.BLACK
@@ -263,7 +285,7 @@ class OpenVR : Extension {
      * The passed draw function is called twice with the drawer's projection and view set
      * for left and right eyes.
      */
-    fun draw(drawer: Drawer, function: OpenVR.() -> Unit) {
+    fun draw(drawer: Drawer, function: OpenVRExtension.() -> Unit) {
         if (!enabled) {
             function()
             return
